@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}Chat{% endblock %}
+{% block content %}
+
+{{ other_user.id|json_script:"other-user-id" }}
+{{ user.id|json_script:"my-user-id" }}
+
+<div class="d-flex justify-content-between align-items-center mb-2">
+  <h5 class="mb-0">Chat with {{ other_user.username }}</h5>
+  <a class="btn btn-sm btn-outline-secondary" href="{% url 'user_list' %}">Back</a>
+</div>
+
+<div id="chatBox" class="chat-box mt-3">
+  {% for m in messages %}
+    <div class="msg-row {% if m.sender_id == user.id %}me{% else %}them{% endif %}">
+      <div class="bubble">
+        <div>{{ m.content }}</div>
+
+        <div class="meta">
+          <span>{{ m.created_at|date:"g:i a" }}</span>
+
+          {% if m.sender_id == user.id %}
+            <span class="status" data-mid="{{ m.id }}">
+              {% if m.is_read %}✓✓{% else %}✓{% endif %}
+            </span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  {% endfor %}
+</div>
+
+<div class="wa-inputbar mt-3">
+  <div class="input-group">
+    <input id="msgInput" class="form-control" placeholder="Type a message..." autocomplete="off">
+    <button id="sendBtn" class="btn btn-success">Send</button>
+  </div>
+</div>
+
+<script>
+  const otherUserId = JSON.parse(document.getElementById("other-user-id").textContent);
+  const myUserId = JSON.parse(document.getElementById("my-user-id").textContent);
+
+  const chatBox = document.getElementById("chatBox");
+  const msgInput = document.getElementById("msgInput");
+  const sendBtn = document.getElementById("sendBtn");
+
+  function scrollToBottom(){ chatBox.scrollTop = chatBox.scrollHeight; }
+  scrollToBottom();
+
+  function makeTempId() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return "tmp_" + Date.now() + "_" + Math.random().toString(16).slice(2);
+  }
+
+  function formatTime(iso){
+    const d = new Date(iso);
+    return d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit', hour12:true});
+  }
+
+  function appendMessage({ tempId=null, messageId=null, text, createdAt, isMe, pending=false }) {
+    const row = document.createElement("div");
+    row.className = "msg-row " + (isMe ? "me" : "them");
+
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+
+    // used for matching optimistic message with server echo
+    if (tempId) bubble.dataset.tempid = tempId;
+    if (messageId) bubble.dataset.mid = messageId;
+
+    const body = document.createElement("div");
+    body.textContent = text;
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+
+    const time = document.createElement("span");
+    time.className = "time";
+    time.textContent = createdAt ? formatTime(createdAt) : "";
+
+    meta.appendChild(time);
+
+    if (isMe) {
+      const st = document.createElement("span");
+      st.className = "status";
+      if (messageId) st.dataset.mid = messageId;  // for ✓✓ updates
+      st.textContent = pending ? "..." : "✓";
+      meta.appendChild(st);
+    }
+
+    bubble.appendChild(body);
+    bubble.appendChild(meta);
+    row.appendChild(bubble);
+    chatBox.appendChild(row);
+    scrollToBottom();
+  }
+
+  const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+  const socket = new WebSocket(`${scheme}://${window.location.host}/ws/chat/${otherUserId}/`);
+
+  socket.onmessage = function(e){
+    const data = JSON.parse(e.data);
+
+    if (data.type === "chat_message") {
+      const isMe = (data.sender_id === myUserId);
+
+      // If it's my message and I already displayed it as pending, update it (no duplicate)
+      if (isMe && data.temp_id) {
+        const pendingBubble = document.querySelector(`.bubble[data-tempid="${data.temp_id}"]`);
+        if (pendingBubble) {
+          pendingBubble.dataset.mid = data.message_id;
+
+          const timeEl = pendingBubble.querySelector(".time");
+          if (timeEl) timeEl.textContent = formatTime(data.created_at);
+
+          const statusEl = pendingBubble.querySelector(".status");
+          if (statusEl) {
+            statusEl.textContent = "✓";
+            statusEl.dataset.mid = data.message_id;
+          }
+          return; // IMPORTANT: don't append again
+        }
+      }
+
+      // Otherwise append normally (receiver side, or if pending bubble not found)
+      appendMessage({
+        messageId: data.message_id,
+        text: data.message,
+        createdAt: data.created_at,
+        isMe: isMe,
+        pending: false
+      });
+    }
+
+    if (data.type === "read_receipt") {
+      data.message_ids.forEach((mid) => {
+        const el = document.querySelector(`.status[data-mid="${mid}"]`);
+        if (el) el.textContent = "✓✓";
+      });
+    }
+  };
+
+  function sendMessage(){
+    const message = (msgInput.value || "").trim();
+    if (!message) return;
+
+    const tempId = makeTempId();
+    const nowIso = new Date().toISOString();
+
+    // 1) show immediately
+    appendMessage({
+      tempId: tempId,
+      text: message,
+      createdAt: nowIso,
+      isMe: true,
+      pending: true
+    });
+
+    // 2) send to server
+    socket.send(JSON.stringify({ message: message, temp_id: tempId }));
+
+    msgInput.value = "";
+    msgInput.focus();
+  }
+
+  sendBtn.onclick = sendMessage;
+  msgInput.addEventListener("keydown", (e) => { if (e.key === "Enter") sendMessage(); });
+</script>
+
+{% endblock %}

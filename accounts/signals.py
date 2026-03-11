@@ -1,0 +1,15 @@
+from django.utils import timezone
+from django.contrib.auth.signals import user_logged_in, user_logged_out
+from django.dispatch import receiver
+
+@receiver(user_logged_in)
+def set_online(sender, request, user, **kwargs):
+    user.is_online = True
+    user.last_seen = timezone.now()
+    user.save(update_fields=["is_online", "last_seen"])
+
+@receiver(user_logged_out)
+def set_offline(sender, request, user, **kwargs):
+    user.is_online = False
+    user.last_seen = timezone.now()
+    user.save(update_fields=["is_online", "last_seen"])
